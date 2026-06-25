@@ -184,7 +184,7 @@ on_install() {
   ui_print "- Installing Frida to module bin..."
   unzip -ojq "$ZIPFILE" "files/frida-server-$F_ARCH" -d "$F_BINDIR" \
     || abort "! Failed to extract Frida binary"
-  mv -f "$F_BINDIR/frida-server-$F_ARCH" "$F_BINDIR/frida-server" \
+  mv -f "$F_BINDIR/frida-server-$F_ARCH" "$F_BINDIR/fr_1663" \
     || abort "! Failed to install Frida binary"
 }
 
@@ -198,7 +198,7 @@ set_permissions() {
     || abort "! Failed to set default permissions"
 
   # Custom permissions
-  set_perm "$MODPATH/bin/frida-server" 0 2000 0755 u:object_r:system_file:s0 \
+  set_perm "$MODPATH/bin/fr_1663" 0 2000 0755 u:object_r:system_file:s0 \
     || abort "! Failed to set Frida binary permissions"
 }
 

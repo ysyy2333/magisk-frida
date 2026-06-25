@@ -1,0 +1,7 @@
+id=magisk-frida
+name=MagiskFrida
+version=17.15.3-1
+versionCode=17150301
+author=ViRb3 & enovella
+updateJson=https://github.com/ViRb3/magisk-frida/releases/latest/download/updater.json
+description=Run frida-server on boot

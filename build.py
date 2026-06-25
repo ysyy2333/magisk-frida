@@ -1,152 +1,98 @@
-#!/user/bin/env python3
-import logging
-import lzma
-import os
-from pathlib import Path
-import shutil
-import threading
+#!/usr/bin/env python3
+"""
+build.py - 打包 MagiskFrida Custom 模块 ZIP
+
+用法:
+    python build.py
+
+输出:
+    MagiskFrida-custom.zip
+"""
+
 import zipfile
-import concurrent.futures
-import json
-import re
+import os
+import sys
+from pathlib import Path
 
-import requests
+PROJECT_ROOT = Path(__file__).resolve().parent
+BASE_DIR = PROJECT_ROOT / "base"
+FILES_DIR = PROJECT_ROOT / "files"
+METAINF_DIR = PROJECT_ROOT / "META-INF"
+OUTPUT_ZIP = PROJECT_ROOT / "MagiskFrida-custom.zip"
 
-PATH_BASE = Path(__file__).parent.resolve()
-PATH_BASE_MODULE: Path = PATH_BASE.joinpath("base")
-PATH_BUILD: Path = PATH_BASE.joinpath("build")
-PATH_BUILD_TMP: Path = PATH_BUILD.joinpath("tmp")
-PATH_DOWNLOADS: Path = PATH_BASE.joinpath("downloads")
+# 需要打包的源目录
+SOURCE_DIRS = [BASE_DIR, FILES_DIR, METAINF_DIR]
 
-logger = logging.getLogger()
-syslog = logging.StreamHandler()
-formatter = logging.Formatter("%(threadName)s : %(message)s")
-syslog.setFormatter(formatter)
-logger.setLevel(logging.INFO)
-logger.addHandler(syslog)
-
-
-def download_file(url: str, path: Path):
-    file_name = url[url.rfind("/") + 1 :]
-    logger.info(f"Downloading '{file_name}' to '{path}'")
-
-    if path.exists():
-        return
-
-    r = requests.get(url, allow_redirects=True)
-    r.raise_for_status()
-    with open(path, "wb") as f:
-        f.write(r.content)
-
-    logger.info("Done")
+# 必须存在的文件
+REQUIRED_FILES = [
+    "module.prop",
+    "utils.sh",
+    "customize.sh",
+    "action.sh",
+    "service.sh",
+    "META-INF/com/google/android/update-binary",
+]
 
 
-def extract_file(archive_path: Path, dest_path: Path):
-    logger.info(f"Extracting '{archive_path.name}' to '{dest_path.name}'")
+def collect_files():
+    """收集所有要打包的文件，返回 (arcname, filepath) 列表"""
+    result = []
 
-    with lzma.open(archive_path) as f:
-        file_content = f.read()
-        path = dest_path.parent
+    for src_dir in SOURCE_DIRS:
+        if not src_dir.exists():
+            print(f"[!] 目录不存在，跳过: {src_dir.name}")
+            continue
 
-        path.mkdir(parents=True, exist_ok=True)
+        for root, dirs, files in os.walk(src_dir):
+            for f in files:
+                filepath = Path(root) / f
+                # arcname = 相对于项目根目录的路径
+                arcname = filepath.relative_to(PROJECT_ROOT)
+                # 去掉 base/ 前缀，让文件直接在 ZIP 根目录
+                if arcname.parts[0] == "base":
+                    arcname = Path(*arcname.parts[1:])
+                result.append((arcname.as_posix(), filepath))
 
-        with open(dest_path, "wb") as out:
-            out.write(file_content)
-
-
-def generate_version_code(project_tag: str) -> int:
-    parts = re.split("[-.]", project_tag)
-    version_code = "".join(f"{int(part):02d}" for part in parts)
-    return int(version_code)
-
-
-def create_module_prop(path: Path, project_tag: str):
-    module_prop = f"""id=magisk-frida
-name=MagiskFrida
-version={project_tag}
-versionCode={generate_version_code(project_tag)}
-author=ViRb3 & enovella
-updateJson=https://github.com/ViRb3/magisk-frida/releases/latest/download/updater.json
-description=Run frida-server on boot"""
-
-    with open(path.joinpath("module.prop"), "w", newline="\n") as f:
-        f.write(module_prop)
+    return result
 
 
-def create_module(project_tag: str):
-    logger.info("Creating module")
+def validate(files):
+    """检查必须的文件是否都存在"""
+    arcnames = [arcname for arcname, _ in files]
+    missing = [f for f in REQUIRED_FILES if f not in arcnames]
 
-    if PATH_BUILD_TMP.exists():
-        shutil.rmtree(PATH_BUILD_TMP)
+    # 至少要有一个 frida-server 二进制
+    has_binary = any(a.startswith("files/frida-server-") for a in arcnames)
 
-    shutil.copytree(PATH_BASE_MODULE, PATH_BUILD_TMP)
-    create_module_prop(PATH_BUILD_TMP, project_tag)
+    if missing:
+        print("[!] 缺少文件:")
+        for m in missing:
+            print(f"      {m}")
+        sys.exit(1)
 
+    if not has_binary:
+        print("[!] files/ 目录下没有 frida-server 二进制")
+        print("    请先下载 frida-server 并放入 files/ 目录")
+        sys.exit(1)
 
-def fill_module(arch: str, frida_tag: str, project_tag: str):
-    threading.current_thread().setName(arch)
-    logger.info(f"Filling module for arch '{arch}'")
-
-    frida_download_url = (
-        f"https://github.com/frida/frida/releases/download/{frida_tag}/"
-    )
-    frida_server = f"frida-server-{frida_tag}-android-{arch}.xz"
-    frida_server_path = PATH_DOWNLOADS.joinpath(frida_server)
-
-    download_file(frida_download_url + frida_server, frida_server_path)
-    files_dir = PATH_BUILD_TMP.joinpath("files")
-    files_dir.mkdir(exist_ok=True)
-    extract_file(frida_server_path, files_dir.joinpath(f"frida-server-{arch}"))
+    print(f"[*] 校验通过，共 {len(files)} 个文件")
 
 
-def create_updater_json(project_tag: str):
-    logger.info("Creating updater.json")
+def build():
+    print(f"[*] 输出: {OUTPUT_ZIP.name}")
 
-    updater = {
-        "version": project_tag,
-        "versionCode": generate_version_code(project_tag),
-        "zipUrl": f"https://github.com/ViRb3/magisk-frida/releases/download/{project_tag}/MagiskFrida-{project_tag}.zip",
-        "changelog": "https://raw.githubusercontent.com/ViRb3/magisk-frida/master/CHANGELOG.md",
-    }
+    files = collect_files()
+    validate(files)
 
-    with open(PATH_BUILD.joinpath("updater.json"), "w", newline="\n") as f:
-        f.write(json.dumps(updater, indent=4))
+    with zipfile.ZipFile(OUTPUT_ZIP, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
+        for arcname, filepath in files:
+            zout.write(filepath, arcname)
+            print(f"    + {arcname}")
 
-
-def package_module(project_tag: str):
-    logger.info("Packaging module")
-
-    module_zip = PATH_BUILD.joinpath(f"MagiskFrida-{project_tag}.zip")
-
-    with zipfile.ZipFile(module_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(PATH_BUILD_TMP):
-            for file_name in files:
-                if file_name == "placeholder" or file_name == ".gitkeep":
-                    continue
-                zf.write(
-                    Path(root).joinpath(file_name),
-                    arcname=Path(root).relative_to(PATH_BUILD_TMP).joinpath(file_name),
-                )
-
-    shutil.rmtree(PATH_BUILD_TMP)
+    size_kb = OUTPUT_ZIP.stat().st_size / 1024
+    print(f"\n[+] 打包完成: {OUTPUT_ZIP}")
+    print(f"    大小: {size_kb:.0f} KB")
 
 
-def do_build(frida_tag: str, project_tag: str):
-    PATH_DOWNLOADS.mkdir(parents=True, exist_ok=True)
-    PATH_BUILD.mkdir(parents=True, exist_ok=True)
-
-    create_module(project_tag)
-
-    archs = ["arm", "arm64", "x86", "x86_64"]
-    executor = concurrent.futures.ProcessPoolExecutor()
-    futures = [
-        executor.submit(fill_module, arch, frida_tag, project_tag) for arch in archs
-    ]
-    for future in concurrent.futures.as_completed(futures):
-        if future.exception() is not None:
-            raise future.exception()
-
-    package_module(project_tag)
-    create_updater_json(project_tag)
-
-    logger.info("Done")
+if __name__ == "__main__":
+    build()
